@@ -1,0 +1,767 @@
+---
+title: "Hydra oligactis sexual/asexual development"
+author: "Jácint Tökölyi"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r Read in data}
+library(DESeq2); library(ggplot2); library(dplyr); library(ggpubr); library(stringr)
+library(ComplexHeatmap); library(clusterProfiler); library(tidyr); library(DBI)
+library(GO.db); library(KEGGREST); library(simplifyEnrichment); library(Biostrings);
+library(goseq); library(circlize); library(colorspace); 
+library(ragg); library(magick)
+
+x <- read.csv("/storage/RNASeq2019/expression_data/holi_sex.isoform.counts.matrix",sep="\t")
+
+dat <- data.frame(sampleID = names(x)[-1])
+dat$Strain <- factor(ifelse(grepl("^C",dat$sampleID), "Male", "Female"),
+                     levels=c("Male","Female"))
+dat$Group <- factor(substring(dat$sampleID, 2, 2), levels=LETTERS[c(2,1,3,4,5)])
+
+row.names(x) <- x[,1]; x <- round(x[,(-1)])
+
+go_terms <- read.table(file="/storage/RNASeq2019/RNASeq2019_transcript_goTerms.txt",sep="\t")
+go_list <- strsplit(go_terms[,2], split=","); names(go_list)<-go_terms[,1]
+
+hs.fasta <- readDNAStringSet("/storage/RNASeq2019/expression_data/holi_sex_trinity.Trinity.fasta")
+seq.len = data.frame(length=width(hs.fasta),
+                     name=sapply(sapply(lapply(names(hs.fasta), strsplit, split=" "),"[",1),"[",1))
+rm(hs.fasta)
+
+
+```
+
+```{r DESeq2 PCA}
+dds <- DESeqDataSetFromMatrix(countData = x,
+                              colData = dat,
+                              design= ~ Group*Strain)
+dds <- dds[rowSums(counts(dds)>=10) >=3,]
+rld <- vst(dds)
+
+pcaData <- plotPCA(rld, intgroup=c("Group","Strain"), returnData = TRUE)
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+pca <- ggplot(pcaData, aes(x = PC1, y = PC2, color=Strain,shape=Group))+geom_point(size=4)+
+  scale_shape_manual(values=c("A"=0,"B"=1,"C"=2,"D"=3,"E"=4),
+                     labels=c("A"="Asex. 18 °C","B"="Buds 18 °C",
+                              "C"="2 days 8 °C","D"="Sex. 2 weeks 8 °C","E"="Asex. 8 °C"))+
+  theme_bw()+scale_color_manual(values=c("Male"="#0571B0","Female"="#CA0020"))+ 
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) + 
+  ylab(paste0("PC2: ", percentVar[2], "% variance"))
+```
+
+```{r DESeq2 pairwise comparisons}
+## B as reference level
+dat$Group <- relevel(dat$Group, "B")
+dds <- DESeqDataSetFromMatrix(countData = x,
+                              colData = dat,
+                              design= ~ Group*Strain)
+dds <- dds[rowSums(counts(dds)>=10) >=3,]
+res <- DESeq(dds)
+resB <- lfcShrink(res, coef = "Strain_Female_vs_Male", type="apeglm") %>% 
+  data.frame()
+resB_up <- filter(resB, log2FoldChange > 1)
+resB_down <- filter(resB, log2FoldChange < -1)
+
+## A as reference level
+dat$Group <- relevel(dat$Group, "A")
+dds <- DESeqDataSetFromMatrix(countData = x,
+                              colData = dat,
+                              design= ~ Group*Strain)
+dds <- dds[rowSums(counts(dds)>=10) >=3,]
+res <- DESeq(dds)
+resA <- lfcShrink(res, coef = "Strain_Female_vs_Male", type="apeglm") %>% 
+  data.frame()
+resA_up <- filter(resA, log2FoldChange > 1)
+resA_down <- filter(resA, log2FoldChange < -1)
+
+## C as reference level
+dat$Group <- relevel(dat$Group, "C")
+dds <- DESeqDataSetFromMatrix(countData = x,
+                              colData = dat,
+                              design= ~ Group*Strain)
+dds <- dds[rowSums(counts(dds)>=10) >=3,]
+res <- DESeq(dds)
+resC <- lfcShrink(res, coef = "Strain_Female_vs_Male", type="apeglm") %>% 
+  data.frame()
+resC_up <- filter(resC, log2FoldChange > 1)
+resC_down <- filter(resC, log2FoldChange < -1)
+
+## D as reference level
+dat$Group <- relevel(dat$Group, "D")
+dds <- DESeqDataSetFromMatrix(countData = x,
+                              colData = dat,
+                              design= ~ Group*Strain)
+dds <- dds[rowSums(counts(dds)>=10) >=3,]
+res <- DESeq(dds)
+resD <- lfcShrink(res, coef = "Strain_Female_vs_Male", type="apeglm") %>% 
+  data.frame()
+resD_up <- filter(resD, log2FoldChange > 1)
+resD_down <- filter(resD, log2FoldChange < -1)
+
+## E as reference level
+dat$Group <- relevel(dat$Group, "E")
+dds <- DESeqDataSetFromMatrix(countData = x,
+                              colData = dat,
+                              design= ~ Group*Strain)
+dds <- dds[rowSums(counts(dds)>=10) >=3,]
+res <- DESeq(dds)
+resE <- lfcShrink(res, coef = "Strain_Female_vs_Male", type="apeglm") %>% 
+  data.frame()
+resE_up <- filter(resE, log2FoldChange > 1)
+resE_down <- filter(resE, log2FoldChange < -1)
+```
+
+```{r Volcano plot}
+cols <- c("Up-regulated" = "#CA0020", "Down-regulated" = "#0571B0", "Not affected" = "white") 
+sizes <- c("Up-regulated" = 2, "Down-regulated" = 2, "Not affected" = 1) 
+alphas <- c("Up-regulated" = 0.5, "Down-regulated" = 0.5, "Not affected" = 0.5)
+
+resB$gene_type <- ifelse(resB$padj>0.01 | abs(resB$log2FoldChange)<1 , "Not affected",
+       ifelse(resB$log2FoldChange < -1 , "Down-regulated", "Up-regulated"))
+
+v1 <- ggplot(resB[which(!is.na(resB$padj)),], aes(y=-log10(padj), x=log2FoldChange, 
+                       size=gene_type, fill=gene_type, alpha=gene_type))+
+  geom_point(shape=21,col="black")+theme_bw()+
+  geom_vline(xintercept=c(-1,1), linetype="dashed")+
+  geom_hline(yintercept = -log10(0.01), linetype="dashed")+
+  scale_size_manual(name="", values=sizes)+
+  scale_fill_manual(name="", values=cols)+
+  scale_alpha_manual(name="", values=alphas)+
+  xlab(bquote(~Log[2] ~ "fold change"))+ylab(bquote(~-Log[10] ~ P[adj]))+
+  labs(title="Buds 18 °C")
+
+resA$gene_type <- ifelse(resA$padj>0.01 | abs(resA$log2FoldChange)<1 , "Not affected",
+       ifelse(resA$log2FoldChange < -1 , "Down-regulated", "Up-regulated"))
+
+v2 <- ggplot(resA[which(!is.na(resA$padj)),], aes(y=-log10(padj), x=log2FoldChange, 
+                       size=gene_type, fill=gene_type, alpha=gene_type))+
+  geom_point(shape=21,col="black")+theme_bw()+
+  geom_vline(xintercept=c(-1,1), linetype="dashed")+
+  geom_hline(yintercept = -log10(0.01), linetype="dashed")+
+  scale_size_manual(values=sizes)+
+  scale_fill_manual(values=cols)+
+  scale_alpha_manual(values=alphas)+
+  xlab(bquote(~Log[2] ~ "fold change"))+ylab(bquote(~-Log[10] ~ P[adj]))+
+  labs(title="Asex. 18 °C")
+
+resC$gene_type <- ifelse(resC$padj>0.01 | abs(resC$log2FoldChange)<1 , "Not affected",
+       ifelse(resC$log2FoldChange < -1 , "Down-regulated", "Up-regulated"))
+
+v3 <- ggplot(resC[which(!is.na(resC$padj)),], aes(y=-log10(padj), x=log2FoldChange, 
+                       size=gene_type, fill=gene_type, alpha=gene_type))+
+  geom_point(shape=21,col="black")+theme_bw()+
+  geom_vline(xintercept=c(-1,1), linetype="dashed")+
+  geom_hline(yintercept = -log10(0.01), linetype="dashed")+
+  scale_size_manual(values=sizes)+
+  scale_fill_manual(values=cols)+
+  scale_alpha_manual(values=alphas)+
+  xlab(bquote(~Log[2] ~ "fold change"))+ylab(bquote(~-Log[10] ~ P[adj]))+
+  labs(title="2 days 8 °C")
+
+resD$gene_type <- ifelse(resD$padj>0.01 | abs(resD$log2FoldChange)<1 , "Not affected",
+       ifelse(resD$log2FoldChange < -1 , "Down-regulated", "Up-regulated"))
+
+v4 <- ggplot(resD[which(!is.na(resD$padj)),], aes(y=-log10(padj), x=log2FoldChange, 
+                       size=gene_type, fill=gene_type, alpha=gene_type))+
+  geom_point(shape=21,col="black")+theme_bw()+
+  geom_vline(xintercept=c(-1,1), linetype="dashed")+
+  geom_hline(yintercept = -log10(0.01), linetype="dashed")+
+  scale_size_manual(values=sizes)+
+  scale_fill_manual(values=cols)+
+  scale_alpha_manual(values=alphas)+
+  xlab(bquote(~Log[2] ~ "fold change"))+ylab(bquote(~-Log[10] ~ P[adj]))+
+  labs(title="Sex. 2 weeks 8 °C")
+
+resE$gene_type <- ifelse(resE$padj>0.01 | abs(resE$log2FoldChange)<1 , "Not affected",
+       ifelse(resE$log2FoldChange < -1 , "Down-regulated", "Up-regulated"))
+
+v5 <- ggplot(resE[which(!is.na(resE$padj)),], aes(y=-log10(padj), x=log2FoldChange, 
+                       size=gene_type, fill=gene_type, alpha=gene_type))+
+  geom_point(shape=21,col="black")+theme_bw()+
+  geom_vline(xintercept=c(-1,1), linetype="dashed")+
+  geom_hline(yintercept = -log10(0.01), linetype="dashed")+
+  scale_size_manual(values=sizes)+
+  scale_fill_manual(values=cols)+
+  scale_alpha_manual(values=alphas)+
+  xlab(bquote(~Log[2] ~ "fold change"))+ylab(bquote(~-Log[10] ~ P[adj]))+
+  labs(title="Asex. 8 °C")
+
+ragg::agg_tiff(filename="/storage/RNASeq2019/de.tiff",
+               width=180,height=120,units="mm",res=300,scaling=0.6)
+ggarrange(pca,
+  ggarrange(v1,v2,v3,v4,v5,ncol=2,nrow=3, common.legend=T, 
+            labels=c("B","C","D","E","F")), ncol=2, labels=c("A",""))
+dev.off()
+```
+
+```{r go term enrichment analysis}
+library(cowplot)
+#### Buds 18 degrees Celsius
+resB$seqID <- row.names(resB)
+resB$seqLen <- left_join(resB, seq.len, join_by(seqID==name)) %>% pull(length)
+B.term2gene <- go_list[names(go_list)%in%row.names(dds)]
+B.GenesDown <- as.integer(resB$padj<0.01 & resB$log2FoldChange < -1)
+B.GenesDown[is.na(B.GenesDown)] <- 0
+names(B.GenesDown) <- resB$seqID
+pwf <- nullp(B.GenesDown, bias.data = resB$seqLen)
+B.go.down <- goseq(pwf, gene2cat = B.term2gene,test.cats=c("GO:BP")) %>% filter(ontology=="BP")
+B.go.down$over_represented_padj <- p.adjust(B.go.down$over_represented_pvalue, "BH")
+B.go.down%>%filter(over_represented_padj<0.01)
+B.go.down$group <- "B"
+B.go.down$type <- "down"
+
+B.GenesUp <- as.integer(resB$padj<0.01 & resB$log2FoldChange > 1)
+B.GenesUp[is.na(B.GenesUp)] <- 0
+names(B.GenesUp) <- resB$seqID
+pwf <- nullp(B.GenesUp, bias.data = resB$seqLen)
+B.go.up <- goseq(pwf, gene2cat = B.term2gene,test.cats=c("GO:BP")) %>% filter(ontology=="BP")
+B.go.up$over_represented_padj <- p.adjust(B.go.up$over_represented_pvalue, "BH")
+B.go.up%>%filter(over_represented_padj<0.01)
+B.go.up$group <- "B"
+B.go.up$type <- "up"
+
+#### Asexuals 18 degrees Celsius
+resA$seqID <- row.names(resA)
+resA$seqLen <- left_join(resA, seq.len, join_by(seqID==name)) %>% pull(length)
+A.term2gene <- go_list[names(go_list)%in%row.names(dds)]
+A.GenesDown <- as.integer(resA$padj<0.01 & resA$log2FoldChange < -1)
+A.GenesDown[is.na(A.GenesDown)] <- 0
+names(A.GenesDown) <- resA$seqID
+pwf <- nullp(A.GenesDown, bias.data = resA$seqLen)
+A.go.down <- goseq(pwf, gene2cat = A.term2gene,test.cats=c("GO:BP")) %>% filter(ontology=="BP")
+A.go.down$over_represented_padj <- p.adjust(A.go.down$over_represented_pvalue, "BH")
+A.go.down%>%filter(over_represented_padj<0.01)
+A.go.down$group <- "A"
+A.go.down$type <- "down"
+
+A.GenesUp <- as.integer(resA$padj<0.01 & resA$log2FoldChange > 1)
+A.GenesUp[is.na(A.GenesUp)] <- 0
+names(A.GenesUp) <- resA$seqID
+pwf <- nullp(A.GenesUp, bias.data = resA$seqLen)
+A.go.up <- goseq(pwf, gene2cat = A.term2gene,test.cats=c("GO:BP")) %>% filter(ontology=="BP")
+A.go.up$over_represented_padj <- p.adjust(A.go.up$over_represented_pvalue, "BH")
+A.go.up%>%filter(over_represented_padj<0.01)
+A.go.up$group <- "A"
+A.go.up$type <- "up"
+
+#### 2 days 8 degrees Celsius
+resC$seqID <- row.names(resC)
+resC$seqLen <- left_join(resC, seq.len, join_by(seqID==name)) %>% pull(length)
+C.term2gene <- go_list[names(go_list)%in%row.names(dds)]
+C.GenesDown <- as.integer(resC$padj<0.01 & resC$log2FoldChange < -1)
+C.GenesDown[is.na(C.GenesDown)] <- 0
+names(C.GenesDown) <- resC$seqID
+pwf <- nullp(C.GenesDown, bias.data = resC$seqLen)
+C.go.down <- goseq(pwf, gene2cat = C.term2gene,test.cats=c("GO:BP")) %>% filter(ontology=="BP")
+C.go.down$over_represented_padj <- p.adjust(C.go.down$over_represented_pvalue, "BH")
+C.go.down%>%filter(over_represented_padj<0.01)
+C.go.down$group <- "C"
+C.go.down$type <- "down"
+
+
+C.GenesUp <- as.integer(resC$padj<0.01 & resC$log2FoldChange > 1)
+C.GenesUp[is.na(C.GenesUp)] <- 0
+names(C.GenesUp) <- resC$seqID
+pwf <- nullp(C.GenesUp, bias.data = resC$seqLen)
+C.go.up <- goseq(pwf, gene2cat = C.term2gene,test.cats=c("GO:BP")) %>% filter(ontology=="BP")
+C.go.up$over_represented_padj <- p.adjust(C.go.up$over_represented_pvalue, "BH")
+C.go.up%>%filter(over_represented_padj<0.01)
+C.go.up$group <- "C"
+C.go.up$type <- "up"
+
+
+#### 2 weeks 8 degrees Celsius
+resD$seqID <- row.names(resD)
+resD$seqLen <- left_join(resD, seq.len, join_by(seqID==name)) %>% pull(length)
+D.term2gene <- go_list[names(go_list)%in%row.names(dds)]
+D.GenesDown <- as.integer(resD$padj<0.01 & resD$log2FoldChange < -1)
+D.GenesDown[is.na(D.GenesDown)] <- 0
+names(D.GenesDown) <- resD$seqID
+pwf <- nullp(D.GenesDown, bias.data = resD$seqLen)
+D.go.down <- goseq(pwf, gene2cat = D.term2gene,test.cats=c("GO:BP")) %>% filter(ontology=="BP")
+D.go.down$over_represented_padj <- p.adjust(D.go.down$over_represented_pvalue, "BH")
+D.go.down%>%filter(over_represented_padj<0.01)
+D.go.down$group <- "D"
+D.go.down$type <- "down"
+
+
+D.GenesUp <- as.integer(resD$padj<0.01 & resD$log2FoldChange > 1)
+D.GenesUp[is.na(D.GenesUp)] <- 0
+names(D.GenesUp) <- resD$seqID
+pwf <- nullp(D.GenesUp, bias.data = resD$seqLen)
+D.go.up <- goseq(pwf, gene2cat = D.term2gene,test.cats=c("GO:BP")) %>% filter(ontology=="BP")
+D.go.up$over_represented_padj <- p.adjust(D.go.up$over_represented_pvalue, "BH")
+D.go.up%>%filter(over_represented_padj<0.01)
+D.go.up$group <- "D"
+D.go.up$type <- "up"
+
+#### 2 weeks 8 degrees Celsius
+resE$seqID <- row.names(resE)
+resE$seqLen <- left_join(resE, seq.len, join_by(seqID==name)) %>% pull(length)
+E.term2gene <- go_list[names(go_list)%in%row.names(dds)]
+E.GenesDown <- as.integer(resE$padj<0.01 & resE$log2FoldChange < -1)
+E.GenesDown[is.na(E.GenesDown)] <- 0
+names(E.GenesDown) <- resE$seqID
+pwf <- nullp(E.GenesDown, bias.data = resE$seqLen)
+E.go.down <- goseq(pwf, gene2cat = E.term2gene,test.cats=c("GO:BP")) %>% filter(ontology=="BP")
+E.go.down$over_represented_padj <- p.adjust(E.go.down$over_represented_pvalue, "BH")
+E.go.down%>%filter(over_represented_padj<0.01)
+E.go.down$group <- "E"
+E.go.down$type <- "down"
+
+
+E.GenesUp <- as.integer(resE$padj<0.01 & resE$log2FoldChange > 1)
+E.GenesUp[is.na(E.GenesUp)] <- 0
+names(E.GenesUp) <- resE$seqID
+pwf <- nullp(E.GenesUp, bias.data = resE$seqLen)
+E.go.up <- goseq(pwf, gene2cat = E.term2gene,test.cats=c("GO:BP")) %>% filter(ontology=="BP")
+E.go.up$over_represented_padj <- p.adjust(E.go.up$over_represented_pvalue, "BH")
+E.go.up%>%filter(over_represented_padj<0.01)
+E.go.up$group <- "E"
+E.go.up$type <- "up"
+
+goTerms.down <- rbind(B.go.down%>%arrange(category),
+                   A.go.down%>%arrange(category),
+                   C.go.down%>%arrange(category),
+                   D.go.down%>%arrange(category),
+                   E.go.down%>%arrange(category))
+goTerms.down$geneRatio <- goTerms.down$numDEInCat / goTerms.down$numInCat
+
+goTerms.up <- rbind(B.go.up%>%arrange(category),
+                   A.go.up%>%arrange(category),
+                   C.go.up%>%arrange(category),
+                   D.go.up%>%arrange(category),
+                   E.go.up%>%arrange(category))
+goTerms.up$geneRatio <- goTerms.up$numDEInCat / goTerms.up$numInCat
+
+go_down <- goTerms.down[c("category", "geneRatio", "over_represented_padj", "group")]
+go_down$geneRatio[go_down$over_represented_padj > 0.01] <- NA
+go_down_df <- data.frame(category=go_down$category[go_down$group=="B"],
+                         B = go_down$geneRatio[go_down$group=="B"],
+                         A = go_down$geneRatio[go_down$group=="A"],
+                         C = go_down$geneRatio[go_down$group=="C"],
+                         D = go_down$geneRatio[go_down$group=="D"],
+                         E = go_down$geneRatio[go_down$group=="E"])
+down.mat <- go_down_df [ which(go_down_df[,2:6]%>%is.na()%>%apply(1,sum) < 5), ]
+row.names(down.mat) <- down.mat[,1]; down.mat <- down.mat[,(-1)]
+
+down_clusts <- binary_cut(GO_similarity(row.names(down.mat),measure="Rel"))
+dd <- data.frame(clusts = down_clusts, goTerm = row.names(down.mat), 
+                 maxGR=apply(down.mat[,1:5], 1, max, na.rm=T))
+dd <- cbind(dd, down.mat)
+dd <- dd[dd$clust %in% names(tail(sort(table(dd$clusts)),5)),]
+dd$TermName <- Term(dd$goTerm)
+down.mat <- down.mat[row.names(down.mat) %in% row.names(dd),]
+dd2 <- dd%>%arrange(clusts, desc(D))
+down.cols = colorRamp2(colors=c("#67A9CF", "#2166AC", "black"), breaks=c(0,0.5,1))
+text_list <- unlist(tapply(1:nrow(dd2), dd2$clusts, head, 3))
+#text_list <- c(1:10, text_list[-(1:3)])
+
+mHeight <- nrow(dd2)
+
+clusts <- c(0, cumsum(table(dd2$clusts)) / length(dd2$clusts))
+anno = anno_mark(at = text_list, labels = str_wrap(dd2$TermName[text_list],40), which = "row",
+                 labels_gp=gpar(fontsize=7),padding=unit(0,"mm"))
+draw(Heatmap(dd2[c("B","A","C","D","E")],name="Gene ratio:",
+        cluster_columns = F, cluster_rows = F, na_col="white",
+        show_row_names = F, border=T,border_gp=gpar(lwd=2),
+        row_order = row.names(dd%>%arrange(clusts, desc(D))), col = down.cols,
+        column_labels=c("Buds 18 °C","Asex. 18 °C","2 days 8 °C","Sex. 2 weeks 8 °C","Asex. 8 °C"), column_names_gp = grid::gpar(fontsize = 8), 
+                heatmap_legend_param = list(
+               legend_direction = "horizontal", 
+               legend_width = unit(2, "cm")))+
+  rowAnnotation(mark = anno, width = unit("60", "mm")),heatmap_legend_side="top")
+decorate_heatmap_body("Gene ratio:", {
+  for(i in 1:length(clusts)) grid.lines(c(0,1), 1 - c(clusts[i],clusts[i]), 
+                                        gp = gpar(lwd = 2, col="black"))
+})
+ht1 <- grid.grab()
+
+go_up <- goTerms.up[c("category", "geneRatio", "over_represented_padj", "group")]
+go_up$geneRatio[go_up$over_represented_padj > 0.01] <- NA
+go_up_df <- data.frame(category=go_up$category[go_up$group=="B"],
+                         B = go_up$geneRatio[go_up$group=="B"],
+                         A = go_up$geneRatio[go_up$group=="A"],
+                         C = go_up$geneRatio[go_up$group=="C"],
+                         D = go_up$geneRatio[go_up$group=="D"],
+                         E = go_up$geneRatio[go_up$group=="E"])
+up.mat <- go_up_df [ which(go_up_df[,2:6]%>%is.na()%>%apply(1,sum) < 5), ]
+row.names(up.mat) <- up.mat[,1]; up.mat <- up.mat[,(-1)]
+
+up_clusts <- binary_cut(GO_similarity(row.names(up.mat),measure="Rel"))
+dd <- data.frame(clusts = up_clusts, goTerm = row.names(up.mat), 
+                 maxGR=apply(up.mat[,1:5], 1, max, na.rm=T))
+dd <- cbind(dd, up.mat)
+dd <- dd[dd$clust %in% names(tail(sort(table(dd$clusts)),5)),]
+dd$TermName <- Term(dd$goTerm)
+up.mat <- up.mat[row.names(up.mat) %in% row.names(dd),]
+dd2 <- dd%>%arrange(clusts, desc(D))
+up.cols = colorRamp2(colors=c("#EF8A62", "#B2182B", "black"), breaks=c(0,0.5,1))
+text_list <- unlist(tapply(1:nrow(dd2), dd2$clusts, head, 3))
+#text_list <- c(1:10, text_list[-(1:4)])
+
+fHeight <- nrow(dd2)
+
+clusts <- c(0, cumsum(table(dd2$clusts)) / length(dd2$clusts))
+anno = anno_mark(at = text_list, labels = str_wrap(dd2$TermName[text_list],40), which = "row",
+                 labels_gp=gpar(fontsize=7),padding=unit(0,"mm"))
+draw(Heatmap(dd2[c("B","A","C","D","E")],name="Gene ratio:",
+        cluster_columns = F, cluster_rows = F, na_col="white",
+        show_row_names = F, border=T,border_gp=gpar(lwd=2),
+        row_order = row.names(dd%>%arrange(clusts, desc(D))), col = up.cols,
+        column_labels=c("Buds 18 °C","Asex. 18 °C","2 days 8 °C","Sex. 2 weeks 8 °C","Asex. 8 °C"), column_names_gp = grid::gpar(fontsize = 8), 
+        heatmap_legend_param = list(
+               legend_direction = "horizontal", 
+               legend_width = unit(2, "cm")))+
+  rowAnnotation(mark = anno, width = unit("60", "mm")), heatmap_legend_side="top")
+decorate_heatmap_body("Gene ratio:", {
+  for(i in 1:length(clusts)) grid.lines(c(0,1), 1 - c(clusts[i],clusts[i]), 
+                                        gp = gpar(lwd = 2, col="black"))
+})
+ht2 <- grid.grab()
+
+ragg::agg_tiff(filename="/storage/RNASeq2019/go.tiff",
+               width=180,height=180,units="mm",res=300,scaling=1)
+plot_grid(ht1, ht2, labels="AUTO")
+dev.off()
+```
+
+```{r Clustering of genes in males} 
+dat$Group <- relevel(dat$Group, "B")
+male_dat <- dat[dat$Strain=="Male",]
+
+male_dds <- DESeqDataSetFromMatrix(countData = x[,grep("^C",names(x))],
+                              colData = male_dat,
+                              design= ~ Group)
+male_dds <- male_dds[rowSums(counts(male_dds)>=10) >= 3,]
+male_res <- DESeq(male_dds)
+male_pairwise <- list()
+male_pairwise[[1]] <- results(male_res, contrast=c("Group", "A","B"))%>%data.frame() %>% 
+  filter(padj<0.01 & abs(log2FoldChange)>1) %>% row.names()
+male_pairwise[[2]] <- results(male_res, contrast=c("Group", "C","B"))%>%data.frame() %>% 
+  filter(padj<0.01 & abs(log2FoldChange)>1) %>% row.names()
+male_pairwise[[3]] <- results(male_res, contrast=c("Group", "D","B"))%>%data.frame() %>% 
+  filter(padj<0.01 & abs(log2FoldChange)>1) %>% row.names()
+male_pairwise[[4]] <- results(male_res, contrast=c("Group", "E","B"))%>%data.frame() %>% 
+  filter(padj<0.01 & abs(log2FoldChange)>1) %>% row.names()
+male_pairwise[[5]] <- results(male_res, contrast=c("Group", "C","A"))%>%data.frame() %>% 
+  filter(padj<0.01 & abs(log2FoldChange)>1) %>% row.names()
+male_pairwise[[6]] <- results(male_res, contrast=c("Group", "D","A"))%>%data.frame() %>% 
+  filter(padj<0.01 & abs(log2FoldChange)>1) %>% row.names()
+male_pairwise[[7]] <- results(male_res, contrast=c("Group", "E","A"))%>%data.frame() %>% 
+  filter(padj<0.01 & abs(log2FoldChange)>1) %>% row.names()
+male_pairwise[[8]] <- results(male_res, contrast=c("Group", "D","C"))%>%data.frame() %>% 
+  filter(padj<0.01 & abs(log2FoldChange)>1) %>% row.names()
+male_pairwise[[9]] <- results(male_res, contrast=c("Group", "E","C"))%>%data.frame() %>% 
+  filter(padj<0.01 & abs(log2FoldChange)>1) %>% row.names()
+male_pairwise[[10]] <- results(male_res, contrast=c("Group", "E","D"))%>%data.frame() %>% 
+  filter(padj<0.01 & abs(log2FoldChange)>1) %>% row.names()
+
+male.DEGs <- unique(unlist(male_pairwise))
+male.x <- as.matrix(x[,grep("^C",names(x))][row.names(x)%in%male.DEGs,]) %>% 
+  t() %>% scale() %>% t()
+male.x <- male.x[,c(4:6, 1:3, 7:15)]
+
+gene_dist <- dist(male.x)
+gene_hclust <- hclust(gene_dist, method = "complete")
+plot(gene_hclust, labels = FALSE)
+male.DEG.clusts <- as.data.frame(cutree(gene_hclust, h=7))
+male.DEG.clusts$transcriptID <- row.names(male.DEG.clusts)
+names(male.DEG.clusts)[1] <- "cluster"
+
+male.x <- as.data.frame(male.x); male.x$transcriptID <- row.names(male.x)
+male.expr <- male.x %>% data.frame() %>% pivot_longer(cols=1:15,names_to="sampleID") %>% 
+  full_join(dat[dat$Strain=="Male",], by="sampleID") %>% full_join(male.DEG.clusts, by="transcriptID") %>%
+  group_by(cluster, transcriptID, Group) %>% summarise(meanExpr = mean(value))
+male.expr$Group <- factor(male.expr$Group, levels=c("B","A","C","D","E"))
+
+male.transcripts <- rep(NA, length(row.names(male_dds))); names(male.transcripts) <- row.names(male_dds)
+term2gene <- go_list[names(go_list)%in%row.names(male_dds)]
+male_cluster_goTerms <- list()
+
+for(i in 1:max(male.DEG.clusts$cluster)){
+  cluster.transcripts <- male.transcripts
+  cluster.transcripts <- ifelse(names(cluster.transcripts)%in%unique(male.expr$transcriptID[male.expr$cluster == i]),
+                                1,0)
+  names(cluster.transcripts) <- names(male.transcripts)
+  pwf <- nullp(cluster.transcripts, bias.data = seq.len$length[match(names(cluster.transcripts), seq.len$name)],
+               plot.fit=F)
+  cluster.ORA <- goseq(pwf, gene2cat = term2gene,test.cats=c("GO:BP")) %>% filter(ontology=="BP")
+  cluster.ORA$over_represented_padj <- p.adjust(cluster.ORA$over_represented_pvalue, "BH")
+  male_cluster_goTerms[[i]] <- cluster.ORA%>%filter(over_represented_padj<0.01)%>%pull("term")
+}
+names(male_cluster_goTerms) <- 1:max(male.DEG.clusts$cluster)
+
+hm.mat <- as.matrix(male.x[,1:15])
+rg <- range(hm.mat)
+
+panel_fun = function(index, nm) {
+    cluster.df <- male.expr[male.expr$transcriptID %in% row.names(hm.mat[index,]),]
+    g <- ggplot(cluster.df, aes(y=meanExpr, x=Group, group=Group))+
+      geom_line(aes(group=transcriptID,x=Group),alpha=0.01)+
+      geom_line(stat="summary", fun="median", color="#2166AC",aes(group=1),linewidth=1.5)+
+      theme_bw() +
+     theme(axis.ticks=element_blank(),
+        axis.text=element_blank(),
+        axis.title=element_blank(),
+        plot.margin=grid::unit(c(0,0,0,0),"cm"))
+    g = grid.grabExpr(print(g))
+    pushViewport(viewport())
+    grid.rect()
+    grid.draw(g)
+    popViewport()
+}
+groups <- c("","Buds 18 °C","",
+            "","Asex. 18 °C","",
+            "","2 days 8 °C","",
+            "","Sex. 2 weeks 8 °C","",
+            "","Asex. 8 °C","")
+col_fun = colorRamp2(c(-2, 0, 2), c("purple", "black", "yellow"))
+
+anno = anno_link(align_to = male.DEG.clusts$cluster, which = "row", panel_fun = panel_fun, 
+    size = unit(1, "cm"), gap = unit(1, "cm"), width = unit(4, "cm"))
+group_anno = anno_text(groups,location=1, rot=45)
+source("/storage/RNASeq2019/word_cloud_mod.R")
+ragg::agg_tiff(filename="/storage/RNASeq2019/heatmap_males.tiff",
+               width=180,height=120,units="mm",res=300,scaling = 0.7)
+
+Heatmap(hm.mat, name="z-score", cluster_columns=F, row_title_rot=0,
+              column_split=rep(1:5, each=3),column_gap=unit(0.1,"mm"), column_title = NULL, 
+        show_row_names = F, row_split = male.DEG.clusts$cluster, col=col_fun,
+        right_annotation = rowAnnotation(foo = anno), left_annotation = 
+  rowAnnotation(go = anno_word_cloud_mod(male.DEG.clusts$cluster, term=male_cluster_goTerms,
+                                     exclude_words=c("via"),
+                                     max_words = 15, side="left", bg_gp = gpar(fill="white"),
+                                     word_cloud_grob_param=list(word_space=unit(5,"mm"),col="black"))),
+  bottom_annotation = HeatmapAnnotation(bar=group_anno, which="column"), show_column_names = F)
+dev.off()
+```
+
+
+```{r Clustering of genes in females} 
+dat$Group <- relevel(dat$Group, "B")
+female_dat <- dat[dat$Strain=="Female",]
+
+female_dds <- DESeqDataSetFromMatrix(countData = x[,grep("^X",names(x))],
+                              colData = female_dat,
+                              design= ~ Group)
+female_dds <- female_dds[rowSums(counts(female_dds)>=10) >= 3,]
+female_res <- DESeq(female_dds)
+female_pairwise <- list()
+female_pairwise[[1]] <- results(female_res, contrast=c("Group", "A","B"))%>%data.frame() %>% 
+  filter(padj<0.01 & abs(log2FoldChange)>1) %>% row.names()
+female_pairwise[[2]] <- results(female_res, contrast=c("Group", "C","B"))%>%data.frame() %>% 
+  filter(padj<0.01 & abs(log2FoldChange)>1) %>% row.names()
+female_pairwise[[3]] <- results(female_res, contrast=c("Group", "D","B"))%>%data.frame() %>% 
+  filter(padj<0.01 & abs(log2FoldChange)>1) %>% row.names()
+female_pairwise[[4]] <- results(female_res, contrast=c("Group", "E","B"))%>%data.frame() %>% 
+  filter(padj<0.01 & abs(log2FoldChange)>1) %>% row.names()
+female_pairwise[[5]] <- results(female_res, contrast=c("Group", "C","A"))%>%data.frame() %>% 
+  filter(padj<0.01 & abs(log2FoldChange)>1) %>% row.names()
+female_pairwise[[6]] <- results(female_res, contrast=c("Group", "D","A"))%>%data.frame() %>% 
+  filter(padj<0.01 & abs(log2FoldChange)>1) %>% row.names()
+female_pairwise[[7]] <- results(female_res, contrast=c("Group", "E","A"))%>%data.frame() %>% 
+  filter(padj<0.01 & abs(log2FoldChange)>1) %>% row.names()
+female_pairwise[[8]] <- results(female_res, contrast=c("Group", "D","C"))%>%data.frame() %>% 
+  filter(padj<0.01 & abs(log2FoldChange)>1) %>% row.names()
+female_pairwise[[9]] <- results(female_res, contrast=c("Group", "E","C"))%>%data.frame() %>% 
+  filter(padj<0.01 & abs(log2FoldChange)>1) %>% row.names()
+female_pairwise[[10]] <- results(female_res, contrast=c("Group", "E","D"))%>%data.frame() %>% 
+  filter(padj<0.01 & abs(log2FoldChange)>1) %>% row.names()
+
+female.DEGs <- unique(unlist(female_pairwise))
+female.x <- as.matrix(x[,grep("^X",names(x))][row.names(x)%in%female.DEGs,]) %>% 
+  t() %>% scale() %>% t()
+female.x <- female.x[,c(4:6, 1:3, 7:15)]
+
+gene_dist <- dist(female.x)
+gene_hclust <- hclust(gene_dist, method = "complete")
+plot(gene_hclust, labels = FALSE)
+female.DEG.clusts <- as.data.frame(cutree(gene_hclust, k=10))
+female.DEG.clusts$transcriptID <- row.names(female.DEG.clusts)
+names(female.DEG.clusts)[1] <- "cluster"
+
+female.x <- as.data.frame(female.x); female.x$transcriptID <- row.names(female.x)
+female.expr <- female.x %>% data.frame() %>% pivot_longer(cols=1:15,names_to="sampleID") %>% 
+  full_join(dat[dat$Strain=="Female",], by="sampleID") %>% full_join(female.DEG.clusts, by="transcriptID") %>%
+  group_by(cluster, transcriptID, Group) %>% summarise(meanExpr = mean(value))
+female.expr$Group <- factor(female.expr$Group, levels=c("B","A","C","D","E"))
+
+female.transcripts <- rep(NA, length(row.names(female_dds))); names(female.transcripts) <- row.names(female_dds)
+term2gene <- go_list[names(go_list)%in%row.names(female_dds)]
+female_cluster_goTerms <- list()
+
+for(i in 1:max(female.DEG.clusts$cluster)){
+  cluster.transcripts <- female.transcripts
+  cluster.transcripts <- ifelse(names(cluster.transcripts)%in%unique(female.expr$transcriptID[female.expr$cluster == i]),
+                                1,0)
+  names(cluster.transcripts) <- names(female.transcripts)
+  pwf <- nullp(cluster.transcripts, bias.data = seq.len$length[match(names(cluster.transcripts), seq.len$name)],
+               plot.fit=F)
+  cluster.ORA <- goseq(pwf, gene2cat = term2gene,test.cats=c("GO:BP")) %>% filter(ontology=="BP")
+  cluster.ORA$over_represented_padj <- p.adjust(cluster.ORA$over_represented_pvalue, "BH")
+  female_cluster_goTerms[[i]] <- cluster.ORA%>%filter(over_represented_padj<0.01)%>%pull("term")
+}
+names(female_cluster_goTerms) <- 1:max(female.DEG.clusts$cluster)
+
+hm.mat <- as.matrix(female.x[,1:15])
+rg <- range(hm.mat)
+
+panel_fun = function(index, nm) {
+    cluster.df <- female.expr[female.expr$transcriptID %in% row.names(hm.mat[index,]),]
+    g <- ggplot(cluster.df, aes(y=meanExpr, x=Group, group=Group))+
+      geom_line(aes(group=transcriptID,x=Group),alpha=0.01)+
+      geom_line(stat="summary", fun="median", color="#B2182B",aes(group=1),linewidth=1.5)+
+      theme_bw() +
+      theme(axis.ticks=element_blank(),
+        axis.text=element_blank(),
+        axis.title=element_blank(),
+        plot.margin=grid::unit(c(0,0,0,0),"cm"))
+    g = grid.grabExpr(print(g))
+    pushViewport(viewport())
+    grid.rect()
+    grid.draw(g)
+    popViewport()
+}
+groups <- c("","Buds 18 °C","",
+            "","Asex. 18 °C","",
+            "","2 days 8 °C","",
+            "","Sex. 2 weeks 8 °C","",
+            "","Asex. 8 °C","")
+col_fun = colorRamp2(c(-2, 0, 2), c("purple", "black", "yellow"))
+
+anno = anno_link(align_to = female.DEG.clusts$cluster, which = "row", panel_fun = panel_fun, 
+    size = unit(1, "cm"), gap = unit(1, "cm"), width = unit(4, "cm"))
+group_anno = anno_text(groups,location=1, rot=45)
+source("/storage/RNASeq2019/word_cloud_mod.R")
+ragg::agg_tiff(filename="/storage/RNASeq2019/heatmap_females.tiff",
+               width=180,height=120,units="mm",res=300,scaling = 0.7)
+
+Heatmap(hm.mat, name="z-score", cluster_columns=F, row_title_rot=0,
+        column_split=rep(1:5, each=3),column_gap=unit(0.1,"mm"), column_title = NULL, 
+        show_row_names = F, row_split = female.DEG.clusts$cluster, col=col_fun,
+        right_annotation = rowAnnotation(foo = anno), left_annotation = 
+  rowAnnotation(go = anno_word_cloud_mod(female.DEG.clusts$cluster, term=female_cluster_goTerms,
+                                     exclude_words=c("via"),
+                                     max_words = 15, side="left", bg_gp = gpar(fill="white"),
+                                     word_cloud_grob_param=list(word_space=unit(5,"mm"),col="black"))),
+  bottom_annotation = HeatmapAnnotation(bar=group_anno, which="column"), show_column_names = F)
+dev.off()
+```
+
+```{r}
+library(readxl); library(ggpubr); library(tibble)
+trin <- read.csv("/storage/RNASeq2019/annotation/Trinotate.xls",sep="\t")
+trin$protID <- sapply(strsplit(trin[,3],split="_"),"[",1)
+
+#clusts <- read_excel("/storage/RNASeq2019/NF_clusters.xlsx")
+#clusts$protID <- sapply(strsplit(sapply(strsplit(clusts$Human,split="|",fixed=T),"[",2),split="_"),"[",1)
+#bf <- clusts[clusts$cluster%in%c("BF"),]
+#bf.trin <- trin[trin$protID%in%bf$protID,]
+
+
+### DMRT
+cat.trin <- trin[grep("DMRT",trin$protID),]
+cat.trin <- cat.trin[cat.trin$transcript_id%in%(c(female.DEGs, male.DEGs)),]
+dim(cat.trin)
+
+cat.x <- x[row.names(x)%in%cat.trin$transcript_id,]
+
+cat.x <- cat.x[rowSums(cat.x>=10)>=3,]
+cat.x.z <- cat.x%>%t() %>% scale() %>% t()
+
+cat.df <- cat.x.z%>%data.frame()%>%rownames_to_column()%>%pivot_longer(cols=2:31)
+cat.df$lgroup <- factor(substr(cat.df$name,2,2), levels=c("B","A","C","D","E"))
+cat.df$sex <- ifelse(substr(cat.df$name,1,1)=="C", "male", "female")
+cat.df$transcript <- trin$protID[match(cat.df$rowname, trin$transcript_id)]
+
+cat.df <- cat.df%>%group_by(sex, lgroup, rowname, transcript)%>%summarise(mean_expr=mean(value))
+cat.df$dm <- gsub("TRINITY_","",cat.df$rowname)
+
+red.cols <- colorRampPalette(c("salmon","firebrick4"))(length(unique(cat.df$rowname)))
+
+plot.dmrt <- ggplot(cat.df, aes(y=mean_expr, x=lgroup, color=rowname))+
+    geom_point()+geom_line(aes(group=rowname))+
+  facet_wrap(~transcript*sex,labeller = label_wrap_gen(multi_line=FALSE))+
+    guides(color=FALSE)+scale_color_manual(values=red.cols)+
+    theme_bw()+ylab("z-score")+xlab("")
+plot.dmrt <- plot.dmrt+ggrepel::geom_text_repel(data=cat.df[cat.df$lgroup=="D",], aes(label=dm),nudge_x=4.5,cex=2.2,direction="y",max.overlaps=1000,segment.color="grey")
+
+
+### BOLL 
+cat.trin <- trin[grep("BOULE|BOLL",trin$protID),]
+cat.trin <- cat.trin[cat.trin$transcript_id%in%(c(female.DEGs, male.DEGs)),]
+dim(cat.trin)
+
+cat.x <- x[row.names(x)%in%cat.trin$transcript_id,]
+
+cat.x <- cat.x[rowSums(cat.x>=10)>=3,]
+cat.x.z <- cat.x%>%t() %>% scale() %>% t()
+
+cat.df <- cat.x.z%>%data.frame()%>%rownames_to_column()%>%pivot_longer(cols=2:31)
+cat.df$lgroup <- factor(substr(cat.df$name,2,2), levels=c("B","A","C","D","E"))
+cat.df$sex <- ifelse(substr(cat.df$name,1,1)=="C", "male", "female")
+cat.df$transcript <- trin$protID[match(cat.df$rowname, trin$transcript_id)]
+
+cat.df <- cat.df%>%group_by(sex, lgroup, rowname, transcript)%>%summarise(mean_expr=mean(value))
+cat.df$dm <- gsub("TRINITY_","",cat.df$rowname)
+
+green.cols <- colorRampPalette(c("lightgreen","darkgreen"))(length(unique(cat.df$rowname)))
+
+plot.boll <- ggplot(cat.df, aes(y=mean_expr, x=lgroup, color=rowname))+
+  geom_point()+geom_line(aes(group=rowname))+
+  facet_wrap(~transcript*sex,ncol=2,labeller = label_wrap_gen(multi_line=FALSE))+
+  guides(color=FALSE)+scale_color_manual(values=green.cols)+
+  theme_bw()+ylab("z-score")+xlab("")
+plot.boll <- plot.boll+ggrepel::geom_text_repel(data=cat.df[cat.df$lgroup=="D",], aes(label=dm),nudge_x=4.5,cex=2.2,direction="y",max.overlaps=1000,segment.color="grey")
+
+### PRDM 
+cat.trin <- trin[grep("PRDM",trin$protID),]
+cat.trin <- cat.trin[cat.trin$transcript_id%in%(c(female.DEGs, male.DEGs)),]
+dim(cat.trin)
+
+cat.x <- x[row.names(x)%in%cat.trin$transcript_id,]
+
+cat.x <- cat.x[rowSums(cat.x>=10)>=3,]
+cat.x.z <- cat.x%>%t() %>% scale() %>% t()
+
+cat.df <- cat.x.z%>%data.frame()%>%rownames_to_column()%>%pivot_longer(cols=2:31)
+cat.df$lgroup <- factor(substr(cat.df$name,2,2), levels=c("B","A","C","D","E"))
+cat.df$sex <- ifelse(substr(cat.df$name,1,1)=="C", "male", "female")
+cat.df$transcript <- trin$protID[match(cat.df$rowname, trin$transcript_id)]
+
+cat.df <- cat.df%>%group_by(sex, lgroup, rowname, transcript)%>%summarise(mean_expr=mean(value))
+cat.df$dm <- gsub("TRINITY_","",cat.df$rowname)
+
+blue.cols <- colorRampPalette(c("lightblue","black"))(length(unique(cat.df$rowname)))
+
+plot.prdm <- ggplot(cat.df, aes(y=mean_expr, x=lgroup, color=rowname))+
+  geom_point()+geom_line(aes(group=rowname))+
+  facet_wrap(~transcript*sex,ncol=2,labeller = label_wrap_gen(multi_line=FALSE))+
+  guides(color=FALSE)+scale_color_manual(values=blue.cols)+
+  theme_bw()+ylab("z-score")+xlab("")
+plot.prdm <- plot.prdm+ggrepel::geom_text_repel(data=cat.df[cat.df$lgroup=="D",], aes(label=dm),nudge_x=4.5,cex=2.2,direction="y",max.overlaps=1000,segment.color="grey")
+
+grps <- c("Buds 18 °C","Asex. 18 °C","2 days 8 °C","Sex. 2 weeks 8 °C","Asex. 8 °C")
+
+ragg::agg_tiff(filename="/storage/RNASeq2019/sel_genes.tiff",
+               width=150,height=120,units="mm",res=300,scaling=0.6)
+ggarrange(ggarrange(plot.dmrt+labs(title="DMRT")+
+                      scale_x_discrete(labels=c("","","","","",""))+
+                      theme(plot.margin=margin(0.5,0.5,0.5,0.5),
+                            axis.title.x=element_blank()), 
+                    plot.boll+labs(title="BOLL/BOULE")+
+                      scale_x_discrete(labels=grps)+
+                      theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1),
+                            plot.margin=margin(0.5,0.5,0.5,0.5)),
+                    labels="AUTO", ncol=1, heights=c(2,3.5)),
+          plot.prdm+labs(title="PRDM")+
+                      scale_x_discrete(labels=grps)+
+                      theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1),
+                            plot.margin=margin(0.5,0.5,0.5,0.5)),
+          labels=c("","C"))
+dev.off()
+
+```
+
